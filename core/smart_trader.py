@@ -11,6 +11,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from enum import Enum
 import numpy as np
+import pandas as pd
 
 
 class OrderType(Enum):
@@ -202,12 +203,12 @@ class SmartTrader:
             )).market_value
             new_value = current_value + amount
             if new_value > max_position_value:
-                return False, f"超过单股最大仓位限制: 将持有 {new_value:.2f}, 限制 {max_position_value:.2f}"
+                return False, f"单股仓位超限: 将占 {new_value/self.total_value*100:.1f}%, 最大 {self.config['max_position_pct']*100}%"
         
         elif order_type == OrderType.SELL:
-            # 检查持仓
+            # 检查是否有持仓
             if code not in self.positions:
-                return False, f"没有持仓 {code}"
+                return False, f"没有 {code} 的持仓"
             if quantity > self.positions[code].quantity:
                 return False, f"持仓不足: 持有 {self.positions[code].quantity}, 卖出 {quantity}"
         
@@ -216,10 +217,10 @@ class SmartTrader:
     def create_order(self, code: str, name: str, order_type: OrderType,
                      price: float, quantity: int, notes: str = "") -> Optional[Order]:
         """创建订单"""
-        # 风险检查
+        # 风控检查
         passed, msg = self.check_risk(code, order_type, price, quantity)
         if not passed:
-            print(f"风险检查未通过: {msg}")
+            print(f"风控拦截: {msg}")
             return None
         
         order_id = f"ORD{datetime.now().strftime('%Y%m%d%H%M%S')}{len(self.orders):04d}"
@@ -238,11 +239,9 @@ class SmartTrader:
         )
         
         self.orders.append(order)
-        print(f"创建订单: {order_id} - {order_type.value} {code} {quantity}股 @ {price}")
-        
         return order
     
-    def execute_order(self, order_id: str, executed_price: Optional[float] = None) -> bool:
+    def execute_order(self, order_id: str, executed_price: float = None) -> bool:
         """执行订单"""
         order = next((o for o in self.orders if o.id == order_id), None)
         if not order:
@@ -253,53 +252,76 @@ class SmartTrader:
             print(f"订单 {order_id} 状态为 {order.status.value}, 无法执行")
             return False
         
-        # 使用实际成交价或订单价格
-        price = executed_price or order.price
-        amount = price * order.quantity
-        
-        if order.order_type == OrderType.BUY:
-            # 更新现金
-            self.cash -= amount
-            
-            # 更新持仓
-            if order.code in self.positions:
-                pos = self.positions[order.code]
-                total_cost = pos.avg_cost * pos.quantity + amount
-                pos.quantity += order.quantity
-                pos.avg_cost = total_cost / pos.quantity
-            else:
-                self.positions[order.code] = Position(
-                    code=order.code,
-                    name=order.name,
-                    quantity=order.quantity,
-                    avg_cost=price,
-                    current_price=price,
-                    market_value=amount,
-                    profit_loss=0,
-                    profit_loss_pct=0,
-                    updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                )
-        
-        elif order.order_type == OrderType.SELL:
-            # 更新现金
-            self.cash += amount
-            
-            # 更新持仓
-            if order.code in self.positions:
-                pos = self.positions[order.code]
-                pos.quantity -= order.quantity
-                if pos.quantity <= 0:
-                    del self.positions[order.code]
+        # 使用指定价格或订单价格
+        price = executed_price if executed_price else order.price
         
         # 更新订单状态
-        order.status = OrderStatus.EXECUTED
-        order.executed_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         order.executed_price = price
+        order.executed_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        order.status = OrderStatus.EXECUTED
+        
+        # 更新持仓
+        if order.order_type == OrderType.BUY:
+            self._buy_position(order)
+        else:
+            self._sell_position(order)
         
         self._save_state()
-        print(f"订单 {order_id} 已执行 @ {price}")
-        
+        print(f"订单 {order_id} 已执行: {order.code} {order.order_type.value} {order.quantity}股 @ {price:.2f}")
         return True
+    
+    def _buy_position(self, order: Order) -> None:
+        """买入持仓"""
+        code = order.code
+        quantity = order.quantity
+        price = order.executed_price
+        amount = price * quantity
+        
+        if code in self.positions:
+            # 加仓，更新成本
+            pos = self.positions[code]
+            total_cost = pos.avg_cost * pos.quantity + amount
+            pos.quantity += quantity
+            pos.avg_cost = total_cost / pos.quantity
+        else:
+            # 新建持仓
+            self.positions[code] = Position(
+                code=code,
+                name=order.name,
+                quantity=quantity,
+                avg_cost=price,
+                current_price=price,
+                market_value=amount,
+                profit_loss=0,
+                profit_loss_pct=0,
+                updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            )
+        
+        self.cash -= amount
+    
+    def _sell_position(self, order: Order) -> None:
+        """卖出持仓"""
+        code = order.code
+        quantity = order.quantity
+        price = order.executed_price
+        amount = price * quantity
+        
+        if code not in self.positions:
+            return
+        
+        pos = self.positions[code]
+        
+        if quantity >= pos.quantity:
+            # 清仓
+            del self.positions[code]
+        else:
+            # 减仓，成本不变
+            pos.quantity -= quantity
+            pos.market_value = pos.quantity * price
+            pos.profit_loss = pos.market_value - (pos.quantity * pos.avg_cost)
+            pos.profit_loss_pct = (price - pos.avg_cost) / pos.avg_cost * 100 if pos.avg_cost > 0 else 0
+        
+        self.cash += amount
     
     def cancel_order(self, order_id: str) -> bool:
         """取消订单"""
@@ -310,34 +332,8 @@ class SmartTrader:
         if order.status == OrderStatus.PENDING:
             order.status = OrderStatus.CANCELLED
             self._save_state()
-            print(f"订单 {order_id} 已取消")
             return True
-        
         return False
-    
-    def check_stop_loss_take_profit(self) -> List[Dict]:
-        """检查止损止盈"""
-        alerts = []
-        
-        for code, pos in self.positions.items():
-            if pos.profit_loss_pct <= -self.config['stop_loss_pct'] * 100:
-                alerts.append({
-                    'code': code,
-                    'name': pos.name,
-                    'type': '止损',
-                    'profit_loss_pct': pos.profit_loss_pct,
-                    'suggestion': f'建议卖出，亏损 {pos.profit_loss_pct:.2f}%'
-                })
-            elif pos.profit_loss_pct >= self.config['take_profit_pct'] * 100:
-                alerts.append({
-                    'code': code,
-                    'name': pos.name,
-                    'type': '止盈',
-                    'profit_loss_pct': pos.profit_loss_pct,
-                    'suggestion': f'建议卖出，盈利 {pos.profit_loss_pct:.2f}%'
-                })
-        
-        return alerts
     
     def get_portfolio_summary(self) -> Dict:
         """获取投资组合摘要"""
@@ -384,12 +380,41 @@ class SmartTrader:
         
         print(f"{'='*100}")
     
+    def check_stop_loss_take_profit(self) -> List[Dict]:
+        """检查止损止盈"""
+        self.update_prices()
+        alerts = []
+        
+        for code, pos in self.positions.items():
+            if pos.profit_loss_pct <= -self.config['stop_loss_pct'] * 100:
+                alerts.append({
+                    'code': code,
+                    'name': pos.name,
+                    'type': '止损警告',
+                    'current_pnl_pct': pos.profit_loss_pct,
+                    'threshold': -self.config['stop_loss_pct'] * 100,
+                    'suggestion': f'建议止损，当前亏损 {pos.profit_loss_pct:.2f}%'
+                })
+            elif pos.profit_loss_pct >= self.config['take_profit_pct'] * 100:
+                alerts.append({
+                    'code': code,
+                    'name': pos.name,
+                    'type': '止盈提醒',
+                    'current_pnl_pct': pos.profit_loss_pct,
+                    'threshold': self.config['take_profit_pct'] * 100,
+                    'suggestion': f'建议止盈，当前盈利 {pos.profit_loss_pct:.2f}%'
+                })
+        
+        return alerts
+    
     def execute_strategy_signals(self, signals, watchlist, max_orders: int = 3) -> List[str]:
         """执行策略信号"""
+        from core.monthly_strategy import SignalType
+        
         executed_orders = []
         
         for signal in signals[:max_orders]:
-            if signal.signal.value == "买入":
+            if signal.signal == SignalType.BUY:
                 # 计算购买数量（简单策略：每只最多投入10%资金）
                 max_amount = self.total_value * 0.1
                 price = signal.indicators.get('close', 0)
@@ -413,5 +438,15 @@ class SmartTrader:
         return executed_orders
 
 
-# 导入pandas用于类型检查
-import pandas as pd
+# 单例
+_smart_trader = None
+
+def get_smart_trader(data_fetcher=None) -> SmartTrader:
+    """获取智能交易管理器单例"""
+    global _smart_trader
+    if _smart_trader is None:
+        if data_fetcher is None:
+            from core.data_fetcher_v2 import get_data_fetcher
+            data_fetcher = get_data_fetcher()
+        _smart_trader = SmartTrader(data_fetcher)
+    return _smart_trader
