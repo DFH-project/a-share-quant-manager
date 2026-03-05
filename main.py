@@ -10,7 +10,7 @@ import os
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.data_fetcher_v2 import DataFetcherV2
+from core.data_fetcher import DataFetcher, data_fetcher
 from core.watchlist_memory import WatchlistMemory
 from core.monthly_strategy import MonthlyStrategy, SignalType
 from core.smart_trader import SmartTrader, OrderType
@@ -196,8 +196,8 @@ def main():
     """主函数"""
     print("\n初始化 A-Share Quant Manager...")
     
-    # 初始化模块
-    fetcher = DataFetcherV2()
+    # 初始化模块 - 使用多数据源DataFetcher
+    fetcher = data_fetcher  # 使用全局单例
     watchlist = WatchlistMemory()
     strategy = MonthlyStrategy(fetcher)
     trader = SmartTrader(fetcher)
