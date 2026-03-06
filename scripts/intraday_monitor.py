@@ -106,7 +106,34 @@ def main():
         if all_codes:
             stock_data = data_fetcher.get_stock_data(all_codes[:40])
             
-            # ===== 5. 策略1: 追涨型（板块龙头+强势股） =====
+            # ===== 5. 策略0: 强势股低吸（最优先） =====
+            dip_items = [item for item in watchlist.get_all() if '低吸' in item.category]
+            if dip_items:
+                print("\n" + "="*60)
+                print("💧 重点监控-强势股低吸（昨日强势，今日回调）")
+                print("="*60)
+                
+                for item in sorted(dip_items, key=lambda x: x.priority, reverse=True)[:5]:
+                    code = item.code
+                    if code in stock_data:
+                        data = stock_data[code]
+                        current = data['current']
+                        change = data['change_pct']
+                        
+                        # 判断买点质量
+                        if -3 <= change <= -1:
+                            status = "✅ 理想买点（回调适中）"
+                        elif -4 <= change < -3:
+                            status = "⚠️ 偏深回调（谨慎）"
+                        elif -1 < change < 0:
+                            status = "📝 微回调（可等）"
+                        else:
+                            status = "❌ 不符预期"
+                        
+                        print(f"💧 {item.name}({code}): {current:.2f} ({change:+.2f}%)")
+                        print(f"   {status} | {item.notes[:50]}")
+            
+            # ===== 6. 策略1: 追涨型（板块龙头+强势股） =====
             chase_items = [item for item in watchlist.get_all() if '追涨' in item.category]
             if chase_items:
                 print("\n" + "="*60)
@@ -222,28 +249,50 @@ def main():
                         data = stock_data[code]
                         print(f"❌ {item.name}({code}): {data['current']:.2f} ({data['change_pct']:+.2f}%)")
         
-        # ===== 11. 买入建议总结 =====
+        # ===== 12. 买入建议总结 =====
         print("\n" + "="*60)
         print("💡 买入建议总结")
         print("="*60)
         
-        buy_recommendations = []
+        # 强势股低吸优先
+        dip_buy = []
         for item in watchlist.get_all():
             code = item.code
-            if code in stock_data and ('追涨' in item.category or '潜力' in item.category or '抄底' in item.category):
+            if code in stock_data and '低吸' in item.category:
+                data = stock_data[code]
+                change = data['change_pct']
+                if -4 <= change <= -1:  # 回调适中
+                    dip_buy.append(f"💧{item.name}({code}) {change:.2f}%")
+        
+        if dip_buy:
+            print("✅ 强势股低吸机会（昨日强势，今日回调）：")
+            for b in dip_buy[:5]:
+                print(f"   {b}")
+        
+        # 其他策略
+        other_buy = []
+        for item in watchlist.get_all():
+            code = item.code
+            if code in stock_data:
                 data = stock_data[code]
                 change = data['change_pct']
                 if change > 3:
-                    strategy = '🚀' if '追涨' in item.category else '💎' if '潜力' in item.category else '🎯'
-                    buy_recommendations.append(f"{strategy}{item.name}({code}) +{change:.2f}%")
+                    if '追涨' in item.category:
+                        other_buy.append(f"🚀{item.name}({code}) +{change:.2f}%")
+                    elif '潜力' in item.category:
+                        other_buy.append(f"💎{item.name}({code}) +{change:.2f}%")
+                    elif '抄底' in item.category:
+                        other_buy.append(f"🎯{item.name}({code}) +{change:.2f}%")
         
-        if buy_recommendations:
-            print("✅ 强势信号（涨幅>3%）：" + ", ".join(buy_recommendations[:5]))
-        else:
-            print("⏳ 暂无强势买入信号，继续观察三策略监控池")
-            print("   追涨型：等待板块龙头放量突破")
-            print("   潜力型：等待热门股启动信号")
-            print("   抄底型：等待调整企稳确认")
+        if other_buy:
+            print("\n🚀 其他强势信号：" + ", ".join(other_buy[:5]))
+        
+        if not dip_buy and not other_buy:
+            print("⏳ 暂无明确买入信号")
+            print("   💧 低吸型：等待昨日强势股今日回调")
+            print("   🚀 追涨型：等待板块龙头放量突破")
+            print("   💎 潜力型：等待热门股启动信号")
+            print("   🎯 抄底型：等待调整企稳确认")
         
         print("\n" + "="*60)
         print(f"✅ 监控完成 [{datetime.now().strftime('%H:%M:%S')}]")

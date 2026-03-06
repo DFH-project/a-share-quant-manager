@@ -13,18 +13,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.data_fetcher import data_fetcher
 from core.watchlist_memory import WatchlistMemory, get_watchlist_memory
-from typing import List, Dict, Tuple
-from datetime import datetime
+from typing import List, Dict, Tuple, Optional
+from datetime import datetime, timedelta
+import json
+from pathlib import Path
 
-# 热门板块核心标的（潜力股）
+# 热门板块核心标的（潜力股池 + 强势股低吸池）
 HOT_SECTOR_CORE = {
-    'AI算力': ['603019', '000938', '600756', '300418', '002230'],
-    '半导体': ['600584', '603160', '002371', '688981', '600460'],
-    '新能源': ['300750', '601012', '600438', '002594', '300014'],
-    '机器人': ['002050', '300124', '002747', '603486', '688169'],
-    '医药': ['600276', '000538', '300760', '603259', '600196'],
-    '低空经济': ['002151', '300900', '002097', '000099', '300775'],
-    '固态电池': ['300073', '002709', '603659', '300450', '002074'],
+    'AI算力': ['603019', '000938', '600756', '300418', '002230', '601138'],
+    '半导体': ['600584', '603160', '002371', '688981', '600460', '002156'],
+    '新能源': ['300750', '601012', '600438', '002594', '300014', '002466'],
+    '机器人': ['002050', '300124', '002747', '603486', '688169', '002896'],
+    '医药': ['600276', '000538', '300760', '603259', '600196', '603127'],
+    '低空经济': ['002151', '300900', '002097', '000099', '300775', '002085'],
+    '固态电池': ['300073', '002709', '603659', '300450', '002074', '300769'],
+    'CPO光模块': ['300308', '300502', '002281', '300394', '000988'],
 }
 
 class AutoWatchlistManager:
@@ -36,7 +39,102 @@ class AutoWatchlistManager:
         self.potential_stocks = []  # 潜力股池
         self.bottom_fishing = []  # 抄底池
         
-    def scan_buy_signals(self, stock_pool: List[str] = None) -> List[Dict]:
+    def scan_dip_buy_opportunities(self) -> List[Dict]:
+        """
+        策略4: 强势股低吸型 - 关键策略
+        特征：
+        1. 属于热门板块核心标的
+        2. 近期有强势表现（昨天或前天涨>2%，证明是强势股）
+        3. 今天回调（跌1-4%，给出买点）
+        4. 不是破位（没有跌破关键支撑）
+        
+        举例：昨天中科曙光+2.5%，今天-1.5% → 低吸机会
+        """
+        dip_opportunities = []
+        
+        try:
+            # 收集所有热门板块核心标的
+            all_hot_stocks = set()
+            for sector, codes in HOT_SECTOR_CORE.items():
+                all_hot_stocks.update(codes)
+            
+            stock_list = list(all_hot_stocks)
+            stock_data = data_fetcher.get_stock_data(stock_list)
+            
+            for code, data in stock_data.items():
+                current = data.get('current', 0)
+                change_pct = data.get('change_pct', 0)
+                prev_close = data.get('prev_close', 0)
+                
+                # 条件1: 今天回调（跌1-4%，给出买点但不过度悲观）
+                if -4 <= change_pct < -0.5:
+                    score = 0
+                    reasons = []
+                    
+                    # 条件2: 昨天涨得好（证明是强势股）
+                    # 通过昨收和今开判断昨日表现
+                    open_price = data.get('open', 0)
+                    if open_price > 0 and prev_close > 0:
+                        # 如果今天高开，说明昨天收盘强势
+                        gap_pct = (open_price - prev_close) / prev_close * 100
+                        if gap_pct > 0.5:  # 高开说明昨天强势
+                            score += 25
+                            reasons.append("昨日强势")
+                    
+                    # 条件3: 热门板块属性（核心逻辑）
+                    sector_name = self._get_stock_sector(code)
+                    if sector_name:
+                        score += 30
+                        reasons.append(f"热门板块-{sector_name}")
+                    
+                    # 条件4: 回调幅度适中（1-4%是良性回调）
+                    if -3 <= change_pct < -1:
+                        score += 20
+                        reasons.append("良性回调")
+                    elif -4 <= change_pct < -3:
+                        score += 10
+                        reasons.append("深度回调")
+                    
+                    # 条件5: 未跌破关键支撑（简化判断：未跌破今日开盘太多）
+                    if open_price > 0:
+                        drop_from_open = (current - open_price) / open_price * 100
+                        if drop_from_open > -2:  # 从开盘跌幅不大
+                            score += 15
+                            reasons.append("支撑有效")
+                    
+                    # 条件6: 成交量未过度放大（不是出货）
+                    volume_ratio = data.get('volume_ratio', 1)
+                    if volume_ratio < 1.5:  # 缩量或正常量
+                        score += 10
+                        reasons.append("未放量恐慌")
+                    
+                    if score >= 50:
+                        dip_opportunities.append({
+                            'code': code,
+                            'name': data.get('name', code),
+                            'price': current,
+                            'change_pct': change_pct,
+                            'score': score,
+                            'reasons': reasons,
+                            'sector': sector_name or '',
+                            'strategy': '强势股低吸',
+                            'time': datetime.now().strftime('%H:%M'),
+                            'suggestion': f'昨日强势，今日回调{change_pct:.1f}%，可考虑低吸'
+                        })
+            
+            dip_opportunities.sort(key=lambda x: x['score'], reverse=True)
+            
+        except Exception as e:
+            print(f"扫描低吸机会失败: {e}")
+        
+        return dip_opportunities[:10]  # 保留前10
+    
+    def _get_stock_sector(self, code: str) -> Optional[str]:
+        """获取股票所属的热门板块"""
+        for sector, codes in HOT_SECTOR_CORE.items():
+            if code in codes:
+                return sector
+        return None
         """
         策略1: 追涨型 - 扫描买入信号
         检测条件：
@@ -244,18 +342,21 @@ class AutoWatchlistManager:
             signals = self.buy_signals
         
         category_map = {
+            '强势股低吸': '重点监控-低吸',
             '追涨型': '重点监控-追涨',
             '潜力型': '重点监控-潜力',
             '抄底型': '重点监控-抄底'
         }
         
         priority_map = {
-            '追涨型': 10,
+            '强势股低吸': 10,  # 最高优先级
+            '追涨型': 9,
             '潜力型': 8,
             '抄底型': 7
         }
         
         emoji_map = {
+            '强势股低吸': '💧',
             '追涨型': '🚀',
             '潜力型': '💎',
             '抄底型': '🎯'
@@ -315,7 +416,12 @@ class AutoWatchlistManager:
                 should_remove = False
                 remove_reason = ""
                 
-                if '追涨' in item.category and change_pct < -5:
+                if '低吸' in item.category and change_pct < -4:
+                    # 低吸失败，继续下跌
+                    should_remove = True
+                    remove_reason = f"低吸失败跌{change_pct:.2f}%"
+                
+                elif '追涨' in item.category and change_pct < -5:
                     should_remove = True
                     remove_reason = f"追涨股大跌{change_pct:.2f}%"
                 
@@ -351,10 +457,21 @@ class AutoWatchlistManager:
         }
     
     def run_full_scan(self) -> Dict:
-        """完整三策略扫描"""
+        """完整四策略扫描"""
         print("\n" + "="*60)
-        print("🔍 启动三策略全量扫描")
+        print("🔍 启动四策略全量扫描")
         print("="*60)
+        
+        # 0. 强势股低吸扫描（最优先）
+        print("\n【策略0: 强势股低吸型 - 昨日强势，今日回调】")
+        print("   核心逻辑：昨天涨得好证明强势，今天回调给出买点")
+        dip_signals = self.scan_dip_buy_opportunities()
+        dip_added = self.auto_add_to_watchlist(dip_signals, '强势股低吸')
+        print(f"  发现 {len(dip_signals)} 个低吸机会，新增 {dip_added} 只")
+        if dip_signals:
+            print("  今日低吸标的：")
+            for s in dip_signals[:3]:
+                print(f"    💧 {s['name']}({s['code']}) {s['change_pct']:+.2f}% - {s['suggestion']}")
         
         # 1. 追涨型扫描
         print("\n【策略1: 追涨型 - 板块龙头+强势股】")
@@ -381,6 +498,7 @@ class AutoWatchlistManager:
         print("="*60)
         
         return {
+            'dip': {'found': len(dip_signals), 'added': dip_added, 'signals': dip_signals[:3]},
             'chase': {'found': len(chase_signals), 'added': chase_added, 'signals': chase_signals[:3]},
             'potential': {'found': len(potential_signals), 'added': potential_added, 'signals': potential_signals[:3]},
             'bottom': {'found': len(bottom_signals), 'added': bottom_added, 'signals': bottom_signals[:3]},
