@@ -3,7 +3,7 @@
 A股盘中监控脚本 - Intraday Monitor
 使用多数据源获取真实数据，监控持仓+自选股
 交易时间: 9:00-15:00
-新增：三策略选股（追涨+潜力+抄底）、板块跟踪、重点监控
+新增：五策略选股（低吸+追涨+潜力+抄底+多维度优选）、板块跟踪、重点监控
 """
 
 import sys
@@ -208,7 +208,34 @@ def main():
                         print(f"🎯 {item.name}({code}): {current:.2f} ({change:+.2f}%)")
                         print(f"   {status} | {item.notes[:50]}")
             
-            # ===== 8. 板块龙头监控（兼容旧分类） =====
+            # ===== 8. 策略4: 多维度综合优选 =====
+            multi_items = [item for item in watchlist.get_all() if '优选' in item.category]
+            if multi_items:
+                print("\n" + "="*60)
+                print("⭐ 重点监控-多维度优选（趋势+基本面+资金+技术+板块）")
+                print("="*60)
+                
+                for item in sorted(multi_items, key=lambda x: x.priority, reverse=True)[:5]:
+                    code = item.code
+                    if code in stock_data:
+                        data = stock_data[code]
+                        current = data['current']
+                        change = data['change_pct']
+                        
+                        # 判断表现
+                        if change > 3:
+                            status = "✅ 强势上涨，综合评分有效"
+                        elif change > 0:
+                            status = "🟢 温和上涨，符合预期"
+                        elif change > -2:
+                            status = "⏳ 小幅调整，观察中"
+                        else:
+                            status = "⚠️ 跌幅较大，重新评估"
+                        
+                        print(f"⭐ {item.name}({code}): {current:.2f} ({change:+.2f}%)")
+                        print(f"   {status} | {item.notes[:50]}")
+            
+            # ===== 9. 板块龙头监控 =====
             sector_items = watchlist.get_by_category("板块龙头")
             if sector_items:
                 print("\n" + "="*60)
@@ -283,6 +310,8 @@ def main():
                         other_buy.append(f"💎{item.name}({code}) +{change:.2f}%")
                     elif '抄底' in item.category:
                         other_buy.append(f"🎯{item.name}({code}) +{change:.2f}%")
+                    elif '优选' in item.category:
+                        other_buy.append(f"⭐{item.name}({code}) +{change:.2f}%")
         
         if other_buy:
             print("\n🚀 其他强势信号：" + ", ".join(other_buy[:5]))
@@ -293,6 +322,7 @@ def main():
             print("   🚀 追涨型：等待板块龙头放量突破")
             print("   💎 潜力型：等待热门股启动信号")
             print("   🎯 抄底型：等待调整企稳确认")
+            print("   ⭐ 多维度：等待高综合评分标的")
         
         print("\n" + "="*60)
         print(f"✅ 监控完成 [{datetime.now().strftime('%H:%M:%S')}]")

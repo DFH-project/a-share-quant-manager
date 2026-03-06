@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.data_fetcher import data_fetcher
 from core.watchlist_memory import WatchlistMemory, get_watchlist_memory
+from core.multi_dimension_analyzer import get_analyzer, StockAnalysisResult
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime, timedelta
 import json
@@ -135,6 +136,8 @@ class AutoWatchlistManager:
             if code in codes:
                 return sector
         return None
+    
+    def scan_buy_signals(self, stock_pool: List[str] = None) -> List[Dict]:
         """
         策略1: 追涨型 - 扫描买入信号
         检测条件：
@@ -345,21 +348,24 @@ class AutoWatchlistManager:
             '强势股低吸': '重点监控-低吸',
             '追涨型': '重点监控-追涨',
             '潜力型': '重点监控-潜力',
-            '抄底型': '重点监控-抄底'
+            '抄底型': '重点监控-抄底',
+            '多维度优选': '重点监控-优选'
         }
         
         priority_map = {
             '强势股低吸': 10,  # 最高优先级
             '追涨型': 9,
             '潜力型': 8,
-            '抄底型': 7
+            '抄底型': 7,
+            '多维度优选': 9  # 高优先级，与追涨同级
         }
         
         emoji_map = {
             '强势股低吸': '💧',
             '追涨型': '🚀',
             '潜力型': '💎',
-            '抄底型': '🎯'
+            '抄底型': '🎯',
+            '多维度优选': '⭐'
         }
         
         category = category_map.get(strategy_type, '重点监控')
@@ -425,6 +431,11 @@ class AutoWatchlistManager:
                     should_remove = True
                     remove_reason = f"追涨股大跌{change_pct:.2f}%"
                 
+                elif '优选' in item.category and change_pct < -5:
+                    # 多维度优选股大跌，评分失效
+                    should_remove = True
+                    remove_reason = f"优选股大跌{change_pct:.2f}%，重新评估"
+                
                 elif '抄底' in item.category and change_pct < -3:
                     # 抄底失败，继续探底
                     should_remove = True
@@ -447,6 +458,54 @@ class AutoWatchlistManager:
             print(f"自动移除检查失败: {e}")
         
         return removed_count
+    
+    def scan_multi_dimension_opportunities(self) -> List[Dict]:
+        """
+        策略5: 多维度综合选股 - 使用多维度分析引擎
+        综合考虑：趋势、基本面、资金面、技术面、板块面
+        """
+        opportunities = []
+        
+        try:
+            # 收集扫描池
+            scan_pool = self._get_default_scan_pool()
+            
+            # 使用多维度分析器
+            analyzer = get_analyzer()
+            
+            print(f"\n  正在对 {len(scan_pool)} 只股票进行多维度分析...")
+            
+            for code in scan_pool[:30]:  # 最多分析30只
+                result = analyzer.analyze_stock(code)
+                if result and result.total_score >= 65:  # 综合评分65分以上
+                    opportunities.append({
+                        'code': result.code,
+                        'name': result.name,
+                        'price': result.current_price,
+                        'change_pct': result.change_pct,
+                        'score': result.total_score,
+                        'trend_score': result.trend_score,
+                        'fund_score': result.fund_score,
+                        'technical_score': result.technical_score,
+                        'reasons': [
+                            f"综合评分{result.total_score:.0f}",
+                            f"趋势{result.trend_score:.0f}",
+                            f"资金{result.fund_score:.0f}",
+                            result.suggestion[:20]
+                        ],
+                        'suggestion': result.suggestion,
+                        'risk_level': result.risk_level,
+                        'strategy': '多维度优选',
+                        'time': datetime.now().strftime('%H:%M')
+                    })
+            
+            # 按综合评分排序
+            opportunities.sort(key=lambda x: x['score'], reverse=True)
+            
+        except Exception as e:
+            print(f"多维度扫描失败: {e}")
+        
+        return opportunities[:10]
     
     def get_strategy_summary(self) -> Dict[str, List[Dict]]:
         """获取三策略汇总"""
@@ -491,7 +550,17 @@ class AutoWatchlistManager:
         bottom_added = self.auto_add_to_watchlist(bottom_signals, '抄底型')
         print(f"  发现 {len(bottom_signals)} 个抄底机会，新增 {bottom_added} 只")
         
-        # 4. 清理走坏的股票
+        # 4. 多维度综合选股（新增核心策略）
+        print("\n【策略4: 多维度综合优选 - 趋势+基本面+资金+技术+板块】")
+        multi_signals = self.scan_multi_dimension_opportunities()
+        multi_added = self.auto_add_to_watchlist(multi_signals, '多维度优选')
+        print(f"  发现 {len(multi_signals)} 只多维度优选标的，新增 {multi_added} 只")
+        if multi_signals:
+            print("  综合评分最高的标的：")
+            for s in multi_signals[:3]:
+                print(f"    ⭐ {s['name']}({s['code']}) 综合{s['score']:.0f}分 - {s['suggestion']}")
+        
+        # 5. 清理走坏的股票
         removed = self.auto_remove_from_watchlist()
         print(f"\n  降级 {removed} 只走坏的股票")
         
@@ -502,6 +571,7 @@ class AutoWatchlistManager:
             'chase': {'found': len(chase_signals), 'added': chase_added, 'signals': chase_signals[:3]},
             'potential': {'found': len(potential_signals), 'added': potential_added, 'signals': potential_signals[:3]},
             'bottom': {'found': len(bottom_signals), 'added': bottom_added, 'signals': bottom_signals[:3]},
+            'multi': {'found': len(multi_signals), 'added': multi_added, 'signals': multi_signals[:3]},
             'removed': removed
         }
     
