@@ -293,6 +293,7 @@ class DataFetcher:
             # 获取全市场数据
             sh_df = ak.stock_sh_a_spot_em()
             sz_df = ak.stock_sz_a_spot_em()
+            import pandas as pd
             all_df = pd.concat([sh_df, sz_df], ignore_index=True)
             
             result = {}
@@ -311,6 +312,122 @@ class DataFetcher:
             return result
         except Exception as e:
             raise Exception(f"AKShare获取失败: {e}")
+    
+    def get_fundamental_data(self, code: str) -> Dict:
+        """
+        获取基本面数据 - 真实PE/PB/ROE等
+        多数据源：AKShare → 东方财富
+        失败时报错，绝不生成假数据
+        """
+        errors = []
+        
+        # 尝试1: AKShare
+        try:
+            return self._get_fundamental_akshare(code)
+        except Exception as e:
+            errors.append(f"AKShare基本面: {e}")
+        
+        # 尝试2: 东方财富
+        try:
+            return self._get_fundamental_eastmoney(code)
+        except Exception as e:
+            errors.append(f"东财基本面: {e}")
+        
+        # 全部失败
+        error_msg = f"❌ 基本面数据获取失败: {'; '.join(errors)}"
+        print(error_msg)
+        raise Exception(error_msg)
+    
+    def _get_fundamental_akshare(self, code: str) -> Dict:
+        """AKShare基本面数据 - 真实数据"""
+        import akshare as ak
+        
+        # 获取个股指标
+        df = ak.stock_individual_info_em(symbol=code)
+        if df is None or df.empty:
+            raise Exception("AKShare返回空数据")
+        
+        result = {}
+        for _, row in df.iterrows():
+            key = row.get('item', '')
+            value = row.get('value', '')
+            
+            if '市盈率' in key or 'PE' in key:
+                try:
+                    result['pe'] = float(value)
+                except:
+                    pass
+            elif '市净率' in key or 'PB' in key:
+                try:
+                    result['pb'] = float(value)
+                except:
+                    pass
+            elif 'ROE' in key or '净资产收益率' in key:
+                try:
+                    result['roe'] = float(value)
+                except:
+                    pass
+            elif '总市值' in key:
+                try:
+                    result['market_cap'] = float(value)
+                except:
+                    pass
+            elif '流通市值' in key:
+                try:
+                    result['float_cap'] = float(value)
+                except:
+                    pass
+            elif '所属行业' in key:
+                result['industry'] = str(value)
+        
+        if not result:
+            raise Exception("AKShare基本面数据解析失败")
+        
+        return result
+    
+    def _get_fundamental_eastmoney(self, code: str) -> Dict:
+        """东方财富基本面数据 - 真实数据"""
+        secid = f"1.{code}" if code.startswith('6') else f"0.{code}"
+        url = "https://push2.eastmoney.com/api/qt/stock/get"
+        params = {
+            'ut': 'fa5fd1943c7b386f172d6893dbfba10b',
+            'fltt': 2,
+            'invt': 2,
+            'fields': 'f162,f163,f167,f168,f170,f171,f57,f58,f60,f61',
+            'secid': secid
+        }
+        resp = self.session.get(url, params=params, timeout=10)
+        data = resp.json()
+        
+        if not data.get('data'):
+            raise Exception("东财返回空数据")
+        
+        d = data['data']
+        result = {
+            'pe': d.get('f162', 0) / 100 if d.get('f162') else None,  # 动态PE
+            'pb': d.get('f167', 0) / 100 if d.get('f167') else None,  # PB
+            'roe': d.get('f163', 0) / 100 if d.get('f163') else None,  # ROE
+        }
+        
+        # 过滤无效数据
+        result = {k: v for k, v in result.items() if v is not None and v > 0}
+        
+        if not result:
+            raise Exception("东财基本面数据无效")
+        
+        return result
+    
+    def get_batch_fundamental(self, codes: List[str]) -> Dict[str, Dict]:
+        """批量获取基本面数据"""
+        result = {}
+        for code in codes:
+            try:
+                result[code] = self.get_fundamental_data(code)
+            except Exception as e:
+                print(f"获取 {code} 基本面失败: {e}")
+                # 失败时不生成假数据，而是标记为失败
+                result[code] = {'error': str(e)}
+        return result
 
 
 # 全局数据获取器实例

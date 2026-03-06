@@ -9,6 +9,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.data_fetcher import data_fetcher
+from core.fundamental_service import get_fundamental_data
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
 import json
@@ -209,42 +210,83 @@ class MultiDimensionAnalyzer:
     
     def _analyze_fundamental(self, code: str) -> Tuple[float, Dict]:
         """
-        基本面分析 (25%)
-        - 估值水平（PE/PB分位数）
-        - 盈利能力（ROE）
-        - 成长性（营收/利润增速）
+        基本面分析 (25%) - 使用真实数据
+        从fundamental_service获取真实PE/PB/ROE
+        绝不生成假数据
         """
         score = 50  # 基础分
         details = {}
         
-        try:
-            # 尝试获取基本面数据
-            # 这里简化处理，实际应该从data_fetcher扩展
-            
-            # 根据股票代码特征做简单判断（仅示例）
-            if code.startswith('60') or code.startswith('00'):
-                # 主板股票，假设基本面较稳健
-                score += 10
-                details['市场板块'] = '主板'
-                details['基本面评价'] = '主板标的，基本面相对稳健'
-            elif code.startswith('30'):
-                # 创业板，成长性较好但波动大
+        # 获取真实基本面数据
+        fundamental = get_fundamental_data(code)
+        
+        if fundamental is None or 'error' in fundamental:
+            # 获取失败，返回明确提示，绝不生成假数据
+            details['数据来源'] = '获取失败'
+            details['状态'] = '使用基础分50分'
+            return 50, details
+        
+        # 使用真实数据计算评分
+        # 1. PE估值评分
+        pe = fundamental.get('pe', 0)
+        details['PE'] = f"{pe:.2f}" if pe else 'N/A'
+        
+        if pe and pe > 0:
+            if pe < 15:
+                score += 25
+                details['PE评价'] = '低估值(PE<15)'
+            elif pe < 30:
+                score += 15
+                details['PE评价'] = '适中(PE<30)'
+            elif pe < 50:
                 score += 5
-                details['市场板块'] = '创业板'
-                details['基本面评价'] = '创业板标的，关注成长性'
-            elif code.startswith('68'):
-                # 科创板，高科技但估值高
+                details['PE评价'] = '偏高(PE<50)'
+            else:
+                score -= 10
+                details['PE评价'] = '过高(PE>=50)'
+        
+        # 2. ROE盈利能力
+        roe = fundamental.get('roe', 0)
+        details['ROE'] = f"{roe:.2f}%" if roe else 'N/A'
+        
+        if roe and roe > 0:
+            if roe > 20:
+                score += 25
+                details['ROE评价'] = '优秀(>20%)'
+            elif roe > 15:
+                score += 20
+                details['ROE评价'] = '良好(>15%)'
+            elif roe > 10:
+                score += 10
+                details['ROE评价'] = '一般(>10%)'
+            else:
+                score -= 5
+                details['ROE评价'] = '较低(<10%)'
+        
+        # 3. PB估值
+        pb = fundamental.get('pb', 0)
+        details['PB'] = f"{pb:.2f}" if pb else 'N/A'
+        
+        if pb and pb > 0:
+            if pb < 2:
+                score += 15
+                details['PB评价'] = '低PB(<2)'
+            elif pb < 4:
+                score += 10
+                details['PB评价'] = '适中(<4)'
+            elif pb < 8:
                 score += 0
-                details['市场板块'] = '科创板'
-                details['基本面评价'] = '科创板标的，高成长高估值'
-            
-            # 默认给予中等偏上评分
-            score += 10
-            details['估值判断'] = '需进一步获取PE/PB数据'
-            details['盈利判断'] = '需进一步获取ROE数据'
-            
-        except Exception as e:
-            details['error'] = str(e)
+                details['PB评价'] = '偏高(<8)'
+            else:
+                score -= 5
+                details['PB评价'] = '过高(>=8)'
+        
+        # 4. 行业信息
+        industry = fundamental.get('industry', '')
+        if industry:
+            details['所属行业'] = industry
+        
+        details['数据来源'] = 'AKShare真实数据'
         
         return max(0, min(100, score)), details
     
