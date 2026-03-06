@@ -30,7 +30,12 @@ class WatchlistItem:
 class WatchlistMemory:
     """自选股记忆管理器"""
     
-    def __init__(self, data_file: str = "./data/watchlist.json"):
+    def __init__(self, data_file: str = None):
+        # 使用绝对路径，确保无论从哪运行都能找到数据文件
+        if data_file is None:
+            # 获取当前文件所在目录的绝对路径
+            current_dir = Path(__file__).parent.parent.absolute()
+            data_file = current_dir / "data" / "watchlist.json"
         self.data_file = Path(data_file)
         self.data_file.parent.mkdir(parents=True, exist_ok=True)
         self.watchlist: Dict[str, WatchlistItem] = {}
@@ -230,7 +235,7 @@ class WatchlistMemory:
 # 单例模式
 _watchlist_memory = None
 
-def get_watchlist_memory(data_file: str = "./data/watchlist.json") -> WatchlistMemory:
+def get_watchlist_memory(data_file: str = None) -> WatchlistMemory:
     """获取自选股记忆管理器单例"""
     global _watchlist_memory
     if _watchlist_memory is None:
